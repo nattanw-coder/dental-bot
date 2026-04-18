@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from flask import Flask, request
 import anthropic
 import json
@@ -62,7 +63,6 @@ def send_message(reply_token, text):
             "messages": [{"type": "text", "text": text}]
         }
     )
-@app.route("/webhook", methods=["POST"])
 
 # ===== ชื่อที่ใช้เรียกบอท =====
 BOT_NAME = "เซียน"
