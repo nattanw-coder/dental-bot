@@ -62,7 +62,6 @@ def send_message(reply_token, text):
             "messages": [{"type": "text", "text": text}]
         }
     )
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
@@ -70,6 +69,10 @@ def webhook():
         if event["type"] != "message":
             continue
         if event["message"]["type"] != "text":
+            continue
+        
+        # กรองข้อความจากบอทตัวเอง
+        if event.get("source", {}).get("type") == "bot":
             continue
 
         user_msg = event["message"]["text"]
