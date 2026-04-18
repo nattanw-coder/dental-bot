@@ -1,8 +1,9 @@
 from flask import Flask, request
 import anthropic
 import json
-from dotenv import load_dotenv
+import requests
 import os
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -10,17 +11,49 @@ app = Flask(__name__)
 
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 CLAUDE_KEY = os.getenv("CLAUDE_KEY")
+
 client = anthropic.Anthropic(api_key=CLAUDE_KEY)
 
-SYSTEM_PROMPT = """
-เราคือผู้ช่วยด้านทันตสุขภาพสำหรับ อสม. ในชุมชน
-ตอบเฉพาะเรื่องสุขภาพช่องปากเท่านั้น เช่น ฟันผุ หินปูน การแปรงฟัน เหงือก
-ใช้ภาษาไทยที่เข้าใจง่าย ไม่ใช้ศัพท์แพทย์
-ถ้าถามนอกเหนือจากนี้ให้ตอบว่า 'สอบถามเพิ่มเติมได้ที่ รพ.สต. นะคะ'
-"""
+# ===== ตั้งค่าหมอ =====
+DOCTOR_MODE = False  # เปลี่ยนเป็น True เมื่อมีหมอในกลุ่ม
+DOCTORS = []  # เพิ่ม LINE user ID หมอตรงนี้ เช่น ["Uxxxx", "Uxxxx"]
 
-def reply(reply_token, text):
-    import requests
+# ===== FAQ =====
+FAQ = {
+    "ฟันผุ": "ฟันผุเกิดจากแบคทีเรียในปากที่ย่อยน้ำตาลแล้วผลิตกรดกัดฟัน สังเกตได้จากฟันมีจุดดำ เป็นรู หรือปวดเวลากินของหวานหรือของเย็น ป้องกันได้โดยแปรงฟันวันละ 2 ครั้ง เช้าและก่อนนอน และลดของหวาน ถ้ามีอาการควรไปพบทันตแพทย์ค่ะ",
+    "หินปูน": "หินปูนคือคราบแบคทีเรียที่แข็งตัวติดกับฟัน แปรงเองไม่ออกค่ะ ถ้าไม่ขูดออกจะทำให้เหงือกอักเสบและฟันโยกได้ แนะนำให้ขูดหินปูนกับทันตแพทย์ปีละ 1-2 ครั้ง ไม่เจ็บและใช้เวลาไม่นานค่ะ",
+    "แปรงฟัน": "แปรงฟันให้ถูกวิธีโดยจับแปรงทำมุม 45 องศากับเหงือก วนเป็นวงกลมเบาๆ แปรงทุกซี่ทั้งด้านนอกด้านในและด้านบด ใช้เวลาอย่างน้อย 2 นาที แปรงวันละ 2 ครั้ง เช้าหลังตื่นนอนและก่อนนอนค่ะ",
+    "เหงือก": "เหงือกเลือดออกตอนแปรงฟันเป็นสัญญาณของเหงือกอักเสบค่ะ เกิดจากคราบแบคทีเรียสะสม ถ้าปล่อยไว้อาจลามจนฟันโยกได้ แนะนำให้แปรงฟันให้ถูกวิธีและไปพบทันตแพทย์เพื่อขูดหินปูนค่ะ",
+    "ฟันเด็ก": "ฟันน้ำนมสำคัญมากค่ะ ถ้าผุแล้วปล่อยทิ้งไว้จะเจ็บปวดและกระทบฟันแท้ที่จะขึ้นมาทีหลัง ควรเริ่มแปรงฟันให้เด็กตั้งแต่ฟันซี่แรกขึ้น ใช้ยาสีฟันผสมฟลูออไรด์นิดเดียวและพาไปพบทันตแพทย์ตั้งแต่อายุ 1 ขวบค่ะ",
+}
+
+KEYWORDS = {
+    "ฟันผุ": ["ฟันผุ", "ฟันเป็นรู", "ฟันดำ", "ฟันผุทำไง", "ฟันเป็นรู"],
+    "หินปูน": ["หินปูน", "ขูดหินปูน", "ฟันเหลือง", "คราบฟัน"],
+    "แปรงฟัน": ["แปรงฟัน", "วิธีแปรง", "แปรงยังไง", "ยาสีฟัน"],
+    "เหงือก": ["เหงือก", "เหงือกอักเสบ", "เหงือกบวม", "เหงือกเลือดออก", "แปรงแล้วเลือดออก"],
+    "ฟันเด็ก": ["ฟันเด็ก", "ฟันน้ำนม", "ฟันผุในเด็ก", "แปรงฟันเด็ก", "ลูกฟันผุ"],
+}
+
+def match_keyword(text):
+    # ให้ Claude จับว่าใกล้เคียง keyword ไหน
+    keyword_list = "\n".join([f"- {k}: {', '.join(v)}" for k, v in KEYWORDS.items()])
+    prompt = f"""จากข้อความนี้: "{text}"
+ให้ตอบชื่อ keyword ที่ใกล้เคียงที่สุดจากรายการนี้เท่านั้น:
+{keyword_list}
+
+ถ้าไม่ตรงกับ keyword ใดเลย ให้ตอบว่า "ไม่ตรง"
+ตอบแค่ชื่อ keyword เดียวเท่านั้น ห้ามอธิบายเพิ่ม"""
+
+    response = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=50,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    result = response.content[0].text.strip()
+    return result if result in FAQ else None
+
+def send_message(reply_token, text):
     requests.post(
         "https://api.line.me/v2/bot/message/reply",
         headers={"Authorization": f"Bearer {LINE_TOKEN}"},
@@ -34,22 +67,26 @@ def reply(reply_token, text):
 def webhook():
     data = request.json
     for event in data.get("events", []):
-        if event["type"] == "message" and event["message"]["type"] == "text":
-            user_msg = event["message"]["text"]
-            reply_token = event["replyToken"]
-            
-            response = client.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=1000,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_msg}]
-            )
-            
-            bot_reply = response.content[0].text
-            reply(reply_token, bot_reply)
-    
+        if event["type"] != "message":
+            continue
+        if event["message"]["type"] != "text":
+            continue
+
+        user_msg = event["message"]["text"]
+        reply_token = event["replyToken"]
+
+        matched = match_keyword(user_msg)
+
+        if matched:
+            send_message(reply_token, FAQ[matched])
+        else:
+            if DOCTOR_MODE and DOCTORS:
+                tags = " ".join([f"@{uid}" for uid in DOCTORS])
+                send_message(reply_token, f"รบกวนปรึกษาคุณหมอเพิ่มเติมนะคะ 🙏 {tags}")
+            else:
+                send_message(reply_token, "รบกวนปรึกษาคุณหมอที่ รพ.สต. เพิ่มเติมนะคะ 🙏")
+
     return "OK"
 
 if __name__ == "__main__":
     app.run(port=5000)
-    
