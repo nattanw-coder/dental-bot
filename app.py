@@ -63,20 +63,40 @@ def send_message(reply_token, text):
         }
     )
 @app.route("/webhook", methods=["POST"])
+
+# ===== ชื่อที่ใช้เรียกบอท =====
+BOT_NAME = "เซียน"
+
+@app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
     for event in data.get("events", []):
+        
+        # Greeting เมื่อบอทเข้า group
+        if event["type"] == "join":
+            send_message(
+                event["replyToken"],
+                "สวัสดีค่ะ หนูชื่อเซียน 🦷 ผู้ช่วยด้านสุขภาพช่องปากค่ะ\nถามเรื่องฟันได้เลย แค่เรียก 'เซียน' นำหน้าคำถามก่อนนะคะ\nเช่น 'เซียน ฟันผุเกิดจากอะไร' ค่ะ 😊"
+            )
+            continue
+
         if event["type"] != "message":
             continue
         if event["message"]["type"] != "text":
             continue
-        
-        # กรองข้อความจากบอทตัวเอง
         if event.get("source", {}).get("type") == "bot":
             continue
 
         user_msg = event["message"]["text"]
         reply_token = event["replyToken"]
+        source_type = event.get("source", {}).get("type")
+
+        # ถ้าอยู่ใน group ต้องเรียก "เซียน" ก่อน
+        if source_type == "group":
+            if BOT_NAME not in user_msg:
+                continue
+            # ตัด "เซียน" ออกแล้วเอาแค่คำถาม
+            user_msg = user_msg.replace(BOT_NAME, "").strip()
 
         matched = match_keyword(user_msg)
 
