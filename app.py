@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from flask import Flask, request
 import anthropic
-import json
 import requests
 import os
 from dotenv import load_dotenv
@@ -16,8 +15,8 @@ CLAUDE_KEY = os.getenv("CLAUDE_KEY")
 client = anthropic.Anthropic(api_key=CLAUDE_KEY)
 
 # ===== ตั้งค่าหมอ =====
-DOCTOR_MODE = False  # เปลี่ยนเป็น True เมื่อมีหมอในกลุ่ม
-DOCTORS = []  # เพิ่ม LINE user ID หมอตรงนี้ เช่น ["Uxxxx", "Uxxxx"]
+DOCTOR_MODE = False
+DOCTORS = []
 
 # ===== FAQ =====
 FAQ = {
@@ -29,30 +28,67 @@ FAQ = {
 }
 
 KEYWORDS = {
-    "ฟันผุ": ["ฟันผุ", "ฟันเป็นรู", "ฟันดำ", "ฟันผุทำไง", "ฟันเป็นรู"],
+    "ฟันผุ": ["ฟันผุ", "ฟันเป็นรู", "ฟันดำ", "ปวดฟัน", "ฟันเจ็บ"],
     "หินปูน": ["หินปูน", "ขูดหินปูน", "ฟันเหลือง", "คราบฟัน"],
-    "แปรงฟัน": ["แปรงฟัน", "วิธีแปรง", "แปรงยังไง", "ยาสีฟัน"],
+    "แปรงฟัน": ["แปรงฟัน", "วิธีแปรง", "แปรงยังไง", "ยาสีฟัน", "แปรงสีฟัน"],
     "เหงือก": ["เหงือก", "เหงือกอักเสบ", "เหงือกบวม", "เหงือกเลือดออก", "แปรงแล้วเลือดออก"],
     "ฟันเด็ก": ["ฟันเด็ก", "ฟันน้ำนม", "ฟันผุในเด็ก", "แปรงฟันเด็ก", "ลูกฟันผุ"],
 }
 
+SYSTEM_FAQ_MATCH = """คุณช่วย classify ข้อความว่าใกล้เคียง keyword ไหน
+ตอบแค่ชื่อ keyword เดียวเท่านั้น ห้ามอธิบายเพิ่ม
+ถ้าไม่ตรงกับ keyword ใดเลย ให้ตอบว่า "ไม่ตรง" """
+
+SYSTEM_AI_ANSWER = """คุณคือผู้ช่วยด้านสุขภาพช่องปากสำหรับ อสม. ในชุมชน
+ตอบเฉพาะเรื่องสุขภาพช่องปากเท่านั้น
+ตอบในฐานะ "ผู้ช่วย" ไม่ใช่ "หมอ" ใช้ภาษาว่า "อาจจะ" "น่าจะ" เสมอ
+ห้ามวินิจฉัยโรคหรือแนะนำยาเฉพาะเจาะจง
+ถ้าเรื่องนอกขอบเขตช่องปาก ให้บอกว่า "ขอบเขตหนูมีแค่เรื่องช่องปากนะคะ 😊"
+ท้ายคำตอบให้ใส่เสมอว่า "นี่เป็นแค่แนวคิดเบื้องต้นนะคะ ปรึกษาคุณหมอโดยตรงเพื่อความแม่นยำค่ะ 🙏" """
+
 def match_keyword(text):
-    # ให้ Claude จับว่าใกล้เคียง keyword ไหน
     keyword_list = "\n".join([f"- {k}: {', '.join(v)}" for k, v in KEYWORDS.items()])
+    faq_list = "\n".join([f"- {k}: {v}" for k, v in FAQ.items()])
+    
     prompt = f"""จากข้อความนี้: "{text}"
-ให้ตอบชื่อ keyword ที่ใกล้เคียงที่สุดจากรายการนี้เท่านั้น:
+
+1. keyword ที่ใกล้เคียงที่สุดจากรายการนี้:
 {keyword_list}
 
-ถ้าไม่ตรงกับ keyword ใดเลย ให้ตอบว่า "ไม่ตรง"
-ตอบแค่ชื่อ keyword เดียวเท่านั้น ห้ามอธิบายเพิ่ม"""
+2. คำตอบจาก FAQ นี้ตอบโจทย์คำถามได้ไหม:
+{faq_list}
+
+ตอบในรูปแบบนี้เท่านั้น:
+KEYWORD: [ชื่อ keyword หรือ ไม่ตรง]
+FAQ_OK: [yes หรือ no]"""
 
     response = client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=50,
+        system=SYSTEM_FAQ_MATCH,
         messages=[{"role": "user", "content": prompt}]
     )
+    
     result = response.content[0].text.strip()
-    return result if result in FAQ else None
+    lines = result.split("\n")
+    keyword = lines[0].replace("KEYWORD:", "").strip()
+    faq_ok = lines[1].replace("FAQ_OK:", "").strip() if len(lines) > 1 else "no"
+    
+    if keyword in FAQ and faq_ok == "yes":
+        return keyword, True   # ตรง FAQ และตอบพอ
+    elif keyword in FAQ and faq_ok == "no":
+        return keyword, False  # ตรง FAQ แต่ตอบไม่พอ
+    else:
+        return None, False     # ไม่ตรง keyword เลย
+
+def ai_answer(text):
+    response = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=500,
+        system=SYSTEM_AI_ANSWER,
+        messages=[{"role": "user", "content": text}]
+    )
+    return response.content[0].text.strip()
 
 def send_message(reply_token, text):
     requests.post(
@@ -64,22 +100,10 @@ def send_message(reply_token, text):
         }
     )
 
-# ===== ชื่อที่ใช้เรียกบอท =====
-BOT_NAME = "เซียน"
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
     for event in data.get("events", []):
-        
-        # Greeting เมื่อบอทเข้า group
-        if event["type"] == "join":
-            send_message(
-                event["replyToken"],
-                "สวัสดีค่ะ หนูชื่อเซียน 🦷 ผู้ช่วยด้านสุขภาพช่องปากค่ะ\nถามเรื่องฟันได้เลย แค่เรียก 'เซียน' นำหน้าคำถามก่อนนะคะ\nเช่น 'เซียน ฟันผุเกิดจากอะไร' ค่ะ 😊"
-            )
-            continue
-
         if event["type"] != "message":
             continue
         if event["message"]["type"] != "text":
@@ -89,25 +113,13 @@ def webhook():
 
         user_msg = event["message"]["text"]
         reply_token = event["replyToken"]
-        source_type = event.get("source", {}).get("type")
-
-        # ถ้าอยู่ใน group ต้องเรียก "เซียน" ก่อน
-        if source_type == "group":
-            if BOT_NAME not in user_msg:
-                continue
-            # ตัด "เซียน" ออกแล้วเอาแค่คำถาม
-            user_msg = user_msg.replace(BOT_NAME, "").strip()
-
-        matched = match_keyword(user_msg)
-
-        if matched:
+        
+        matched, faq_ok = match_keyword(user_msg)
+        if matched and faq_ok:
             send_message(reply_token, FAQ[matched])
         else:
-            if DOCTOR_MODE and DOCTORS:
-                tags = " ".join([f"@{uid}" for uid in DOCTORS])
-                send_message(reply_token, f"รบกวนปรึกษาคุณหมอเพิ่มเติมนะคะ 🙏 {tags}")
-            else:
-                send_message(reply_token, "รบกวนปรึกษาคุณหมอที่ รพ.สต. เพิ่มเติมนะคะ 🙏")
+            answer = ai_answer(user_msg)
+            send_message(reply_token, answer)
 
     return "OK"
 
